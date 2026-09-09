@@ -1,0 +1,29 @@
+{
+  "name": "fsbuilds-monetization-bot",
+  "version": "1.0.0",
+  "description": "fsBuilds reference: a Discord in-game store bot powered by FastSpring — /store with VIP gating, /announce, and webhook-driven purchase confirmation.",
+  "main": "src/index.js",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test"
+  },
+  "keywords": [
+    "fastspring",
+    "discord",
+    "discord.js",
+    "webhooks",
+    "monetization",
+    "fsbuilds"
+  ],
+  "author": "FastSpring Developer Relations",
+  "license": "ISC",
+  "dependencies": {
+    "discord.js": "^14.27.0",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1"
+  }
+}
