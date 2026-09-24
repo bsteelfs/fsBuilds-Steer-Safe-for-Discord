@@ -1,36 +1,43 @@
+const path = require('path');
 const express = require('express');
-const webhookRoute = require('./routes/webhook');
-
-const app = express();
-
-// The webhook route MUST receive the raw body. The HMAC signature is computed
-// over the exact bytes FastSpring sent, so no JSON parser may run before the
-// signature is verified — express.raw() keeps req.body as a Buffer.
-app.use('/webhook', express.raw({ type: 'application/json' }));
-app.use('/webhook', webhookRoute);
-
-// Health check — handy for confirming your tunnel reaches this server.
-app.get('/ping', (req, res) => {
-    res.send('fsBuilds Webhook Server is running!');
-});
+const webhookRouter = require('./routes/webhook');
+const authRouter = require('./routes/auth');
+const checkoutRouter = require('./routes/checkout');
 
 function startServer() {
-    const port = process.env.PORT || 3000;
-    const server = app.listen(port, () => {
-        console.log(`Web server listening on port ${port}`);
-    });
+  const app = express();
+  const PORT = process.env.PORT || 3000;
 
-    // Without this, a port collision surfaces as an opaque unhandled 'error'.
-    server.on('error', (err) => {
-        if (err.code === 'EADDRINUSE') {
-            console.error(`Port ${port} is already in use — another instance of the bot is probably still running.`);
-        } else {
-            console.error('Web server error:', err);
-        }
-        process.exit(1);
-    });
+  // Capture the raw request body string before JSON parsing.
+  // This is required for HMAC signature verification in the webhook handler —
+  // once express.json() parses the body, the original bytes are gone.
+  app.use(
+    express.json({
+      verify: (req, _res, buf) => {
+        req.rawBody = buf.toString('utf8');
+      },
+    })
+  );
 
-    return server;
+  app.use('/webhook', webhookRouter);
+
+  // Public branding assets (the Eggblast logo shown on the /checkout page).
+  app.use('/assets', express.static(path.join(__dirname, '..', '..', 'assets')));
+
+  // Discord OAuth (one-time account connect) and the per-buy session redirect.
+  // Both build FastSpring sessions server-side, keeping identity/product out of
+  // the URL. These are plain GET routes — no body parser needed.
+  app.use('/auth', authRouter);
+  app.use('/checkout', checkoutRouter);
+
+  return new Promise((resolve, reject) => {
+    app
+      .listen(PORT, () => {
+        console.log(`Web server running on port ${PORT}`);
+        resolve();
+      })
+      .on('error', reject);
+  });
 }
 
-module.exports = startServer;
+module.exports = { startServer };

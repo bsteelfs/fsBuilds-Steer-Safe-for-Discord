@@ -1,44 +1,59 @@
-// src/presentation.js
-//
-// Presentation layer for the store. FastSpring owns commerce + product content
-// (names, prices, artwork, descriptions) — the bot pulls all of that live via
-// the API, so updating a product in the FastSpring dashboard is reflected in
-// Discord with no code change. This file owns only store-level branding and
-// WHICH products appear where.
-//
-// Every path below must match a published FastSpring product path exactly.
+/**
+ * Presentation layer for the store.
+ *
+ * Division of responsibility:
+ *   - FastSpring owns COMMERCE + PRODUCT CONTENT: which products are sellable,
+ *     names, prices, artwork (`image`), and descriptions. The bot pulls all of
+ *     that live via the API, so updating a product's art/copy in the FastSpring
+ *     dashboard is reflected in Discord with no code change.
+ *   - This file owns STORE-LEVEL BRANDING (the Eggblast Arena header/logo) and
+ *     small cosmetic touches FastSpring doesn't model, like a per-item emoji.
+ *
+ * Branding images are shipped with the bot and sent as Discord attachments
+ * (see store.js), which is more reliable than hosting them behind a tunnel.
+ */
+
 const STORE_BRANDING = {
-    name: 'Eggblast Arena',
-    title: '🛒 Item Shop',
-    tagline: 'Stock up on coins and passes to dominate the arena. Pick an item below — your private checkout opens in seconds.',
-    color: 0x0099ff, // accent bar down the left of the container
+  name: 'Eggblast Arena',
+  title: '🏪 In-Game Store',
+  tagline:
+    'Stock up on gems and passes to dominate the arena. Pick an item below — your private checkout opens in seconds.',
+  color: 0x8a2be2, // Eggblast purple
+  footer: 'Secure checkout powered by FastSpring',
+  // Local asset files in /assets, attached to the message at runtime.
+  logoFile: 'eggblast-logo.png',
+  heroFile: 'eggblast-hero.png',
 };
 
-// Featured products, shown to everyone. Array order = display order.
-//   100-coins   → "Starter Pack"  $0.99  (one-time)
-//   battle-pass → "Battle Pass"  $24.99  (recurring, weekly)
-const FEATURED_PRODUCTS = ['100-coins', 'battle-pass'];
+// Curated, ordered list of FastSpring product paths to feature in this store.
+// Unlike the base build (which lists the whole catalog via GET /products), this
+// fork highlights a hand-picked set — the array order is the display order.
+// Everything else (name, price, artwork, description) is still pulled live from
+// FastSpring per product.
+const FEATURED_PRODUCTS = [
+  '100-coins',
+  'battle-pass',
+  'venomtail-egg',
+  'lavablast-egg',
+];
 
-// VIP-exclusive products — shown in /store ONLY to VIPs (see src/vip.js).
-//   500-coins → "Ultimate Pack"  $3.99  (one-time)
-//   mega-pack → "MEGA PACK"      $0.01  (one-time)
-const VIP_PRODUCTS = ['500-coins', 'mega-pack'];
+// VIP-exclusive products — shown in /store ONLY to VIP players (see src/vip.js).
+// Editable: swap these paths for whichever items you want gated to VIPs.
+const VIP_PRODUCTS = [
+  '500-coins',
+  'mega-pack',
+];
 
-// The subscription a non-VIP is nudged to buy to unlock VIP perks.
-// VIP-by-subscription (src/vip.js) matches ANY active subscription on the
-// linked FastSpring account, and battle-pass is the recurring product in the
-// featured list — so it doubles as the VIP unlock. Swap this for one of the
-// other subscription products (essentials-monthly, professional-monthly,
-// advanced-monthly, or their -yearly variants) if you'd rather gate on those.
+// The subscription product a non-VIP is nudged to buy to unlock VIP perks.
 const VIP_UPSELL_PRODUCT = 'battle-pass';
 
 // Shown only when a product has no description set in FastSpring.
 const FALLBACK_BLURB = 'Select to view details and purchase.';
 
 module.exports = {
-    STORE_BRANDING,
-    FEATURED_PRODUCTS,
-    VIP_PRODUCTS,
-    VIP_UPSELL_PRODUCT,
-    FALLBACK_BLURB,
+  STORE_BRANDING,
+  FEATURED_PRODUCTS,
+  VIP_PRODUCTS,
+  VIP_UPSELL_PRODUCT,
+  FALLBACK_BLURB,
 };

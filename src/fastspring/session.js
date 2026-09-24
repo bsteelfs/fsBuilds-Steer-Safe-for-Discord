@@ -1,71 +1,63 @@
-const { createCheckoutSession } = require('../store/repository');
-
 /**
- * Builds links into the FastSpring-backed web shop (WEBSHOP_URL).
+ * Builds the links the /store message points at.
  *
- * HOW THE BUYER'S DISCORD IDENTITY REACHES THE ORDER
- * The shop reads these query params:
- *   prod           → product path to pre-load into the cart
- *   coupon         → optional coupon code
- *   session_token  → attached to the order as a FastSpring ORDER TAG
+ * This build no longer stuffs the product + buyer identity into the web-shop URL
+ * as query params. Instead:
  *
- * It does NOT read uid/uname, so we don't send them. Instead the bot mints an
- * unguessable session token per checkout (stored against the Discord user in
- * store/repository.js) and sends only that. When the order completes, the
- * webhook reads tags.session_token and trades it back for the Discord user.
+ *   - BUY links point back at THIS server's /checkout/:token route, carrying only
+ *     a short-lived SIGNED token (see ../tokens.js). On click, that route creates
+ *     a FastSpring session server-side (product + orderTags + purchaser) and
+ *     renders the embedded checkout. Nothing sensitive or editable is in the URL,
+ *     and tags are guaranteed onto the order (see ../fastspring/sessions.js).
  *
- * WHY A TOKEN RATHER THAN THE RAW DISCORD ID:
- * Query params are visible and editable by the buyer. A raw `uid` in the URL
- * could be swapped to credit somebody else's account; a random token carries no
- * meaning off this server, and expires. (For higher-value goods, look at
- * FastSpring "Secure Payloads" to sign the cart itself.)
+ *   - CONNECT links start the one-time Discord OAuth flow so we can capture the
+ *     player's email (the Sessions API needs a purchaser).
+ *
+ *   - browseUrl / featureUrl are plain public web-shop links, used by /announce,
+ *     which is posted to the whole server (no single buyer to tag, and a session
+ *     can't be created without a purchaser).
  */
-function requireWebshopUrl() {
-    const baseUrl = process.env.WEBSHOP_URL;
-    if (!baseUrl) {
-        throw new Error('WEBSHOP_URL is not defined in the .env file.');
-    }
-    // new URL() needs a scheme — a bare "store.example.com" throws
-    // ERR_INVALID_URL, so fail with a message that says what's actually wrong.
-    try {
-        return new URL(baseUrl);
-    } catch {
-        throw new Error(`WEBSHOP_URL is not a valid URL (include https://): ${baseUrl}`);
-    }
+const tokens = require('../tokens');
+
+const DEFAULT_WEBSHOP_URL = 'https://eggblast.fastspringexamples.com/';
+
+/** Public base URL of THIS bot's server (the tunnel URL in dev). */
+function serverBase() {
+  return (process.env.SERVER_URL || 'http://localhost:3000').replace(/\/$/, '');
 }
 
 /**
- * A per-buyer checkout link: pre-loads the product AND carries a token that
- * identifies the Discord user who clicked it.
- *
- * @param {string} productPath   FastSpring product path
- * @param {string} discordUserId Discord user id of the buyer
- * @param {string} discordUsername Discord username (for friendlier logs/DMs)
+ * A per-player, tamper-proof BUY link. The product path and the player's Discord
+ * identity are encoded into a signed, expiring token — never as raw URL params.
+ * Clicking it hits /checkout/:token, which builds the FastSpring session.
  */
-function generateCheckoutUrl(productPath, discordUserId, discordUsername) {
-    const url = requireWebshopUrl();
-    const token = createCheckoutSession({ discordUserId, discordUsername });
-
-    url.searchParams.set('prod', productPath);
-    url.searchParams.set('session_token', token);
-
-    return url.toString();
+function buildBuyLink(productPath, discordUserId, discordUsername) {
+  const token = tokens.sign({ productPath, discordUserId, discordUsername }, 900);
+  return `${serverBase()}/checkout/${token}`;
 }
 
 /**
- * A product link with NO buyer identity — for public announcements, where
- * there's no single player to attribute the click to. Pre-loads the product;
- * the buyer's identity is whatever they enter at checkout.
+ * The one-time "Connect account" link that starts Discord OAuth. `state` carries
+ * a signed discordUserId so the callback can trust who authorized.
+ */
+function buildConnectLink(discordUserId) {
+  const state = tokens.sign({ discordUserId, purpose: 'oauth' }, 900);
+  return `${serverBase()}/auth/discord?state=${encodeURIComponent(state)}`;
+}
+
+/** The public web shop base URL — for a "browse the whole store" button. */
+function browseUrl() {
+  return process.env.WEBSHOP_URL || DEFAULT_WEBSHOP_URL;
+}
+
+/**
+ * A product deep link WITHOUT a buyer identity — for /announce (posted to the
+ * whole server). Pre-selects the product; the buyer identifies at the web shop.
  */
 function featureUrl(productPath) {
-    const url = requireWebshopUrl();
-    url.searchParams.set('prod', productPath);
-    return url.toString();
+  const base = process.env.WEBSHOP_URL || DEFAULT_WEBSHOP_URL;
+  const sep = base.includes('?') ? '&' : '?';
+  return `${base}${sep}prod=${encodeURIComponent(productPath)}`;
 }
 
-/** The shop's base URL with no params — a plain "browse the store" link. */
-function browseUrl() {
-    return requireWebshopUrl().toString();
-}
-
-module.exports = { generateCheckoutUrl, featureUrl, browseUrl };
+module.exports = { buildBuyLink, buildConnectLink, browseUrl, featureUrl };

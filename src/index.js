@@ -1,30 +1,15 @@
-// quiet: true suppresses dotenv's startup banner/tips.
-require('dotenv').config({ quiet: true });
-
+require('dotenv').config();
+const { startServer } = require('./web/server');
 const { startBot } = require('./bot');
-const startServer = require('./web/server');
 
-// A rejected promise nobody caught would otherwise kill the process silently
-// (or, on older Node, only print a warning). Log it loudly instead — the bot
-// should survive a one-off Discord/FastSpring API hiccup.
-process.on('unhandledRejection', (reason) => {
-    console.error('Unhandled promise rejection:', reason);
-});
-
-async function bootstrap() {
-    try {
-        console.log('Starting fsBuilds monetization bot...');
-
-        // Webhook server first, so it's already listening when FastSpring
-        // starts delivering events for anything bought during startup.
-        startServer();
-        await startBot();
-
-        console.log('System online.');
-    } catch (error) {
-        console.error('Failed to start the application:', error);
-        process.exit(1);
-    }
+async function main() {
+  // Start the Express server first so the /webhook endpoint is ready before the
+  // bot begins accepting Discord interactions.
+  await startServer();
+  await startBot();
 }
 
-bootstrap();
+main().catch((err) => {
+  console.error('Fatal startup error:', err);
+  process.exit(1);
+});
