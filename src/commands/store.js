@@ -29,9 +29,12 @@ const playerLinks = require('../store/repository');
 // "section" (text + image accessory) with its own buy button directly beneath —
 // so the button is unmistakably tied to its product, all in a single message.
 //
-// Components V2 caps a message at 40 total components; each product card costs
-// ~5, so we cap the combined (featured + VIP) card count to stay under it.
-const MAX_TOTAL_CARDS = 7;
+// Components V2 caps a message at 40 total components, NESTED ones included
+// (container, sections, text, thumbnails, rows, buttons, separators). A product
+// card costs 5 (section + text + thumbnail + row + button), so we count what the
+// header/connect/VIP blocks use and fit as many cards as the remainder allows.
+const COMPONENT_LIMIT = 40;
+const CARD_COST = 5;
 
 const ASSETS_DIR = path.join(__dirname, '..', '..', 'assets');
 
@@ -133,6 +136,8 @@ async function execute(interaction) {
       new ActionRowBuilder().addComponents(linkButton('Browse the Full Web Shop', browse))
     )
     .addSeparatorComponents(new SeparatorBuilder()); // divider under the header
+  // container + gallery + text + row + button + separator
+  let used = 6;
 
   // One-time connect prompt for players we can't yet identify to FastSpring.
   // After they authorize once, this disappears and buy buttons go live.
@@ -147,6 +152,7 @@ async function execute(interaction) {
       new ActionRowBuilder().addComponents(linkButton('🔗 Connect Your Account', buildConnectLink(discordUserId), '🔗'))
     );
     container.addSeparatorComponents(new SeparatorBuilder());
+    used += 4; // text + row + button + separator
   }
 
   // VIP section FIRST (just under the header), then the general featured items.
@@ -159,10 +165,12 @@ async function execute(interaction) {
     console.warn('[/store] VIP check failed:', err.message);
   }
 
-  let vipCardsUsed = 0;
+  // Reserve room for the Featured header (separator + text) and at least one card.
+  const FEATURED_HEADER = 2;
   if (vipStatus.vip) {
     let vipItems = await fetchProducts(VIP_PRODUCTS).catch(() => []);
-    vipItems = vipItems.slice(0, MAX_TOTAL_CARDS);
+    const vipRoom = Math.floor((COMPONENT_LIMIT - used - 1 - FEATURED_HEADER - CARD_COST) / CARD_COST);
+    vipItems = vipItems.slice(0, Math.max(0, vipRoom));
     if (vipItems.length) {
       container.addTextDisplayComponents(
         new TextDisplayBuilder().setContent(
@@ -170,7 +178,7 @@ async function execute(interaction) {
         )
       );
       vipItems.forEach((item) => appendProduct(container, item, ctx));
-      vipCardsUsed = vipItems.length;
+      used += 1 + vipItems.length * CARD_COST;
     }
   } else {
     const upsell = (await fetchProducts([VIP_UPSELL_PRODUCT]).catch(() => []))[0];
@@ -181,7 +189,9 @@ async function execute(interaction) {
           : '## ⭐ Unlock VIP Exclusives\nSubscribe to unlock members-only items.'
       )
     );
+    used += 1;
     if (upsell) {
+      used += 2; // row + button
       container.addActionRowComponents(
         new ActionRowBuilder().addComponents(
           connected
@@ -193,9 +203,7 @@ async function execute(interaction) {
   }
 
   // Featured items below the VIP section, as their own labelled group.
-  const budget = vipStatus.vip
-    ? Math.max(0, MAX_TOTAL_CARDS - vipCardsUsed)
-    : MAX_TOTAL_CARDS - 1;
+  const budget = Math.max(0, Math.floor((COMPONENT_LIMIT - used - FEATURED_HEADER) / CARD_COST));
   const featured = catalog.slice(0, budget);
   if (catalog.length > featured.length) {
     console.warn(`[/store] Showing ${featured.length}/${catalog.length} featured items to stay under the component cap.`);

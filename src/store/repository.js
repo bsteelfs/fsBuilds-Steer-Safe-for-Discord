@@ -19,10 +19,10 @@ const path = require('path');
  * PlayerLink shape:
  *   {
  *     discordUserId: string,   // primary key
- *     fsAccountId:   string,   // FastSpring account id (reverse-lookup key)
+ *     fsAccountId:   string|null,  // FastSpring account id (set after first purchase)
  *     email:         string,
  *     gamePlayerId:  string|null,  // reserved for future fulfillment
- *     linkSource:    'purchase' | 'manual',
+ *     linkSource:    'oauth' | 'purchase' | 'manual',
  *     linkedAt:      ISO string,
  *     updatedAt:     ISO string
  *   }

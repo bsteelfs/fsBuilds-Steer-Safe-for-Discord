@@ -1,8 +1,8 @@
-v,nzvb,vcb# Eggblast Arena — Discord Web Shop Bot
+# Eggblast Arena — Discord Web Shop Bot
 
 A Discord bot that brings your **FastSpring** web shop into your game's Discord
 server. Players run `/store` to see featured products (pulled live from
-FastSpring) and jump to a pre-filled checkout; community managers run `/announce`
+FastSpring) and buy through an embedded FastSpring checkout; community managers run `/announce`
 to promote season updates and products to the whole server; and VIP members see
 exclusive items no one else does.
 
@@ -20,8 +20,13 @@ the exact code that powers each piece.
   with an optional custom banner and product cards chosen live from the catalog.
 - **VIP logic** — a player is VIP by a Discord role *or* an active FastSpring
   subscription.
+- **Server-side checkout sessions** — each Buy button creates a FastSpring
+  Sessions API checkout on the server (product, buyer, and order tags), then
+  shows it as an embedded checkout. Nothing editable rides in the URL.
+- **One-time account connect** — players authorize once with Discord OAuth so the
+  bot can give FastSpring their verified email (the Sessions API requires a buyer).
 - **Purchase confirmation + identity linking** — a FastSpring webhook confirms
-  purchases and quietly maps the Discord user to their FastSpring account.
+  purchases, DMs the buyer, and maps the Discord user to their FastSpring account.
 
 Everything runs from **one bot**. Product data (names, prices, art, descriptions)
 lives in FastSpring and is fetched live, so updating the shop needs no code change.
@@ -40,12 +45,17 @@ Discord bot (discord.js)                     ┌──────────�
    │                                          └──────────────────────────────┘
    │  builds a buy button per product
    ▼
-One Components-V2 message (buy + browse buttons)
-   │  click → opens the hosted FastSpring web shop, pre-filled (?prod=&uid=&uname=)
+One Components-V2 message (buy/connect + browse buttons)
+   │  first time only: Connect → GET /auth/discord → Discord OAuth → email saved
+   │  click Buy → GET /checkout/:token (signed, expiring token)
    ▼
-Hosted web shop → buyer checks out            │ order.completed (HMAC signed)
-   ▼                                          ▼
-Your server  POST /webhook  ◄──────────────────
+Your server  POST /v2/checkouts/{path}/sessions  ───► FastSpring API
+   │  (product + purchaser + orderTags {discordUserId})   ◄── session id
+   ▼
+Embedded checkout page: fastspring.builder.checkout(sessionId)
+   │  buyer pays                                │ order.completed (HMAC signed)
+   ▼                                            ▼
+Your server  POST /webhook  ◄────────────────────
    │  1. verify HMAC SHA256 signature
    │  2. link Discord id ↔ FastSpring account (passive)
    │  3. (TODO) grant the item in-game
@@ -53,8 +63,8 @@ Your server  POST /webhook  ◄────────────────�
 ```
 
 **Client (Discord) → your backend (Node/Express) → FastSpring.** The bot never
-handles payment — FastSpring does. The bot surfaces products, hands off to the
-web shop, and listens for the result.
+handles payment — FastSpring does. The bot surfaces products, hands off to a
+FastSpring checkout, and listens for the result.
 
 ---
 
@@ -74,6 +84,8 @@ web shop, and listens for the result.
 src/
 ├── index.js                 entry point — starts the web server, then the bot
 ├── discord-client.js        the shared discord.js client
+├── discord-oauth.js         one-time Discord OAuth (identify + email)
+├── tokens.js                HMAC-signed, expiring tokens for buy/connect links
 ├── bot.js                   registers commands, routes interactions
 ├── presentation.js          branding, featured list, VIP list (edit this to reshape the shop)
 ├── roles.js                 hasRole() helper
@@ -84,14 +96,19 @@ src/
 ├── fastspring/
 │   ├── api.js               FastSpring API client (Basic auth)
 │   ├── catalog.js           fetch products from FastSpring
-│   ├── session.js           build web-shop deep links
+│   ├── session.js           build buy / connect / web-shop links
+│   ├── sessions.js          createCheckout() — FastSpring Sessions API
 │   └── accounts.js          subscription lookup (VIP)
 ├── store/
 │   └── repository.js        Discord ↔ FastSpring link store (JSON file)
 └── web/
     ├── server.js            Express server (captures raw body for HMAC)
-    └── routes/webhook.js    POST /webhook → verify → link → confirm
+    └── routes/
+        ├── webhook.js       POST /webhook → verify → link → confirm
+        ├── auth.js          GET /auth/discord (+ /callback) → save email
+        └── checkout.js      GET /checkout/:token → session → embedded checkout
 assets/                      branding images (hero banner + logo)
+checkout-test/               local embedded-checkout test page
 data/                        link store (gitignored — contains email PII)
 ```
 
@@ -111,20 +128,23 @@ cp .env.example .env
 1. In the Discord Developer Portal, create an application.
 2. Under **Bot**, copy the token → `DISCORD_BOT_TOKEN`. Copy the **Application ID**
    → `DISCORD_CLIENT_ID`.
-3. Invite the bot with **both** the `bot` and `applications.commands` scopes. The
+3. Under **OAuth2**, reset and copy the **Client Secret** → `DISCORD_CLIENT_SECRET`,
+   and add `<SERVER_URL>/auth/discord/callback` under **Redirects** (exact match,
+   or Discord shows "Invalid OAuth2 redirect_uri").
+4. Invite the bot with **both** the `bot` and `applications.commands` scopes. The
    `bot` scope is required — without it the bot can run commands but can't DM:
    ```
    https://discord.com/api/oauth2/authorize?client_id=<CLIENT_ID>&permissions=2147567616&scope=bot%20applications.commands
    ```
-4. Enable Developer Mode in Discord, right-click your server → **Copy Server ID**
+5. Enable Developer Mode in Discord, right-click your server → **Copy Server ID**
    → `DISCORD_GUILD_ID`. (Registering to one server makes commands appear
    instantly, which is ideal for development.)
 
 ### 3. Connect FastSpring
 
-1. **API credentials**: FastSpring dashboard → Settings → API Credentials →
-   `FS_API_USERNAME` / `FS_API_PASSWORD`. These authenticate the product and
-   subscription lookups:
+1. **API credentials**: FastSpring dashboard → Integrations → API Credentials →
+   `FS_API_USERNAME` / `FS_API_PASSWORD`. These authenticate the product,
+   subscription, and Sessions API calls:
    ```js
    // src/fastspring/api.js
    const fsApi = axios.create({
@@ -133,9 +153,19 @@ cp .env.example .env
      headers: { 'Content-Type': 'application/json' },
    });
    ```
-2. **Web shop URL**: set `WEBSHOP_URL` to your hosted web shop. Buy buttons deep
-   link to it with the product and buyer identity pre-filled.
-3. **Webhook**: FastSpring dashboard → Integrations → Webhooks → add a URL
+2. **Embedded storefront**: set `FS_STOREFRONT_PATH` to `<account>/<storefront>`
+   (e.g. `mystore.test/embedded-store`) — used for
+   `POST /v2/checkouts/{FS_STOREFRONT_PATH}/sessions`. It must be an
+   **embedded**-type storefront whose allowed domains include your `SERVER_URL`.
+   `FS_SBL_STOREFRONT` (`<account>.onfastspring.com/<storefront>`) is optional;
+   it's derived from the path if blank.
+3. **Web shop URL**: set `WEBSHOP_URL` to your public web shop. It's used only for
+   the "Browse the full web shop" button and `/announce` product links.
+4. **Link signing secret**: set `LINK_TOKEN_SECRET` to a long random string:
+   ```bash
+   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+   ```
+5. **Webhook**: FastSpring dashboard → Integrations → Webhooks → add a URL
    endpoint:
    - URL: `https://<your-public-url>/webhook` (include `https://` and the
      `/webhook` path)
@@ -145,7 +175,8 @@ cp .env.example .env
 ### 4. Expose your server
 
 Start a public HTTPS tunnel to your local port (`PORT`, default 3000), put that
-URL in `.env` as `SERVER_URL`, and use it as the webhook endpoint in step 3. A
+URL in `.env` as `SERVER_URL`, and use it for the webhook (step 3) and the OAuth
+redirect (step 2). A
 reserved/stable domain is worth it so the webhook URL doesn't change on restart.
 
 ### 5. Set up roles
@@ -185,13 +216,13 @@ Edit `src/presentation.js` — no other code changes needed:
 
 ```js
 // Featured products (everyone). Array order = display order.
-const FEATURED_PRODUCTS = ['plasma-overdrive-egg', 'infinite-battle-pass', 'battle-pass'];
+const FEATURED_PRODUCTS = ['100-coins', 'battle-pass', 'venomtail-egg', 'lavablast-egg'];
 
 // VIP-only products.
-const VIP_PRODUCTS = ['time-warp-egg', 'titan-forge-egg', 'unstable-nucleus-egg'];
+const VIP_PRODUCTS = ['500-coins', 'mega-pack'];
 
 // The subscription a non-VIP is nudged to buy to unlock VIP perks.
-const VIP_UPSELL_PRODUCT = 'infinite-battle-pass';
+const VIP_UPSELL_PRODUCT = 'battle-pass';
 ```
 
 Branding (title, tagline, color, and the `assets/` hero + logo images) also lives
@@ -214,10 +245,14 @@ Run `/store` in your server.
 | `DISCORD_BOT_TOKEN` | Bot token from the Developer Portal |
 | `DISCORD_CLIENT_ID` | Application (client) ID |
 | `DISCORD_GUILD_ID` | Server ID to register commands to |
+| `DISCORD_CLIENT_SECRET` | OAuth2 client secret (one-time account connect) |
 | `FS_API_USERNAME` / `FS_API_PASSWORD` | FastSpring API credentials |
 | `FS_WEBHOOK_SECRET` | HMAC secret matching the FastSpring webhook config |
-| `WEBSHOP_URL` | Hosted web shop the buy/browse buttons link to |
-| `SERVER_URL` | Public URL forwarding to your server (for the `/webhook` endpoint) |
+| `FS_STOREFRONT_PATH` | `<account>/<storefront>` for the Sessions API (embedded storefront) |
+| `FS_SBL_STOREFRONT` | Optional SBL `data-storefront`; derived from the path if blank |
+| `LINK_TOKEN_SECRET` | Signs buy/connect link tokens and the OAuth `state` |
+| `WEBSHOP_URL` | Public web shop for the browse button and `/announce` links |
+| `SERVER_URL` | Public URL forwarding to your server (webhook, OAuth callback, `/checkout`) |
 | `PORT` | Local server port (default 3000) |
 | `DISCORD_VIP_ROLE_ID` | Role that grants VIP (in addition to active subscriptions) |
 | `DISCORD_CM_ROLE_ID` | Role allowed to run `/announce` |
@@ -232,18 +267,34 @@ Run `/store` in your server.
 ### `/store`
 Ephemeral (only the player sees it). Shows the branded header + browse button, the
 VIP section (or upsell), and the featured items — each product with its own buy
-button that deep links to the web shop, pre-filled with the product and the
-player's Discord identity:
+button. Until a player connects (once, via Discord OAuth), buttons read
+**Connect to buy**. After that, each Buy link carries only a signed, expiring
+token:
 
 ```js
 // src/fastspring/session.js — per-player buy link
-function buildCheckoutUrl(productPath, discordUserId, discordUsername) {
-  const base = process.env.WEBSHOP_URL || DEFAULT_WEBSHOP_URL;
-  const params = new URLSearchParams({ uname: discordUsername, uid: discordUserId, prod: productPath });
-  const sep = base.includes('?') ? '&' : '?';
-  return `${base}${sep}${params.toString()}`;
+function buildBuyLink(productPath, discordUserId, discordUsername) {
+  const token = tokens.sign({ productPath, discordUserId, discordUsername }, 900);
+  return `${serverBase()}/checkout/${token}`;
 }
 ```
+
+Clicking it creates the FastSpring session server-side and renders it embedded:
+
+```js
+// src/web/routes/checkout.js
+const { id: sessionId } = await createCheckout({
+  productPath: claims.productPath,
+  accountId: link.fsAccountId || undefined,          // returning buyer
+  contact: link.email ? { email: link.email } : undefined, // first purchase (OAuth email)
+  tags: { discordUserId: claims.discordUserId, discordUsername: claims.discordUsername || '' },
+});
+// …serves a page that calls fastspring.builder.checkout(sessionId)
+```
+
+> The Sessions API response only includes a **hosted** checkout URL. To keep the
+> checkout **embedded**, the bot serves its own page and loads the session id into
+> the Store Builder Library instead of redirecting.
 
 ### `/announce`
 Community-manager-only. Posts a **public** web-shop message.
@@ -329,9 +380,9 @@ async function checkVip(interaction) {
 ```
 
 Two things to know about the **subscription** path (also noted in the code):
-- It requires the Discord ↔ FastSpring **link**, which is created only when a
-  purchase carries the buyer's Discord id (see below). Until the web shop passes
-  that id onto orders, the subscription path is dormant and VIP is role-only.
+- It requires the Discord ↔ FastSpring **account id**, which is saved from the
+  first `order.completed` webhook (the session's `discordUserId` order tag). Before
+  a player's first purchase, VIP is role-only.
 - It matches **any** active subscription. To gate on a specific product, check the
   subscription's product path.
 
@@ -384,9 +435,6 @@ if (discordUserId && fsAccountId) {
 - **Real fulfillment** — replace the grant-item `// TODO` in the webhook handler
   with a call to your game's grant API. Today it confirms + DMs but doesn't
   deliver goods.
-- **Pass the Discord id onto orders** — for subscription-based VIP and buyer
-  confirmation on real purchases, the web shop needs to attach the `uid`/`uname`
-  it receives as FastSpring order tags.
 - **Global command rollout** — commands register to one guild for fast dev
   iteration; switch to application-wide registration for a public rollout.
 
@@ -394,6 +442,13 @@ if (discordUserId && fsAccountId) {
 
 ## Troubleshooting
 
+- **No DM after a purchase** — check the FastSpring webhook URL ends in
+  `/webhook` and `FS_WEBHOOK_SECRET` matches; your tunnel log should show
+  `POST /webhook 200`.
+- **"Invalid OAuth2 redirect_uri"** — add `<SERVER_URL>/auth/discord/callback`
+  to Discord Developer Portal → OAuth2 → Redirects.
+- **Checkout page stays on "Loading…"** — the embedded storefront's allowed
+  domains must include your `SERVER_URL` host (check the browser console).
 - **DM fails with "no mutual guilds"** — the bot was invited without the `bot`
   scope. Re-invite with both `bot` and `applications.commands`.
 - **FastSpring log: "host parameter is null"** — the webhook URL is missing the

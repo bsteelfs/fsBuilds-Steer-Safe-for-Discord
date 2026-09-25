@@ -11,7 +11,7 @@ const { FEATURED_PRODUCTS } = require('../presentation');
  *
  * Display order matches the FEATURED_PRODUCTS array order. Any path that
  * doesn't resolve (typo, unpublished) is logged and skipped, not fatal.
- * Returns a clean array ready to populate the Discord embeds + select menu.
+ * Returns a clean array ready to render as /store product cards.
  */
 async function fetchCatalog() {
   return fetchProducts(FEATURED_PRODUCTS);
